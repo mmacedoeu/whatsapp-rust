@@ -34,10 +34,30 @@ impl Default for ClientProfile {
 
 impl ClientProfile {
     pub fn web() -> Self {
+        // Phase 7.J.4: match WA Web's identity on the wire. The previous
+        // defaults (`os_version="0.1.0"`, `device="Desktop"`, locale
+        // `en/US`) were placeholders — the WA server can trivially
+        // distinguish them from a real Chrome on Linux UA, which the
+        // Phone app's Linked Devices panel also displays as
+        // "Chrome (Linux)". Sending a known-bad fingerprint gets the
+        // noise handshake accepted (server OK's noise keys) but the
+        // subsequent encrypted-channel request is rejected with
+        // `<failure reason="401" location="..."/>` — the exact pattern
+        // we hit on every recent re-pair.
+        //
+        // Reference: WA Web's `Client/Payload.js` produces this
+        // fingerprint shape (Chrome on Linux, mid-2024 stable):
+        //   platform       = WEB
+        //   app_version    = WA client (2.2412.54 etc., set via DeviceProps.version)
+        //   os_version     = Chrome browser version (124.0.6367.78)
+        //   device         = "Chrome"
+        //   manufacturer   = ""
+        //   locale_*       = browser locale (pt/BR for Brazilian operator)
+        //   web_info       = WEB_BROWSER subplatform
         Self {
             user_agent_platform: wa::client_payload::user_agent::Platform::WEB,
-            device: "Desktop".to_string(),
-            os_version: "0.1.0".to_string(),
+            device: "Chrome".to_string(),
+            os_version: "124.0.6367.78".to_string(),
             manufacturer: String::new(),
             include_web_info: true,
             passive_login: false,
