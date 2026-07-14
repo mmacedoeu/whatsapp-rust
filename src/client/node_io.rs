@@ -1435,6 +1435,15 @@ impl Client {
         let reason_code = attrs.optional_u64("reason").unwrap_or(0) as i32;
         let reason = ConnectFailureReason::from(reason_code);
 
+        // Patch: trace-level capture of the raw failure stanza BEFORE we
+        // dispatch the lifecycle event. Pairs with the WARN line in the
+        // LoggedOut arm so request/response correlation is possible when
+        // RUST_LOG=wacore=trace (or higher) is set.
+        tracing::trace!(
+            failure_node = %DisplayableNodeRef(node),
+            "wa: connect_failure received from server"
+        );
+
         if reason.should_reconnect() {
             self.expected_disconnect.store(false, Ordering::Relaxed);
         } else {
@@ -1444,7 +1453,26 @@ impl Client {
         if reason.is_logged_out() {
             // Log the full <failure> so a server-side lock/ban is diagnosable;
             // `location` (e.g. "rva") is a routing token, not the cause.
+            //
+            // Patch: extract server `message` (was discarded) + fingerprint the
+            // noise static public key so we can correlate this LoggedOut across
+            // broken-* snapshots and re-pairs. SHA-256 (not blake3 — wacore has
+            // no blake3 dep) truncated to 16 hex chars; safe to log because it
+            // is a fingerprint, not the key itself.
+            let server_message = attrs
+                .optional_string("message")
+                .map(|m| m.into_owned())
+                .unwrap_or_default();
+            let noise_fp = {
+                use sha2::{Digest, Sha256};
+                let pk_bytes = self.core.device.noise_key.public_key.public_key_bytes();
+                let digest = Sha256::digest(pk_bytes);
+                hex::encode(&digest[..8]) // 16 hex chars
+            };
             warn!(
+                noise_identity_fp = %noise_fp,
+                server_message = %server_message,
+                reason_code = reason_code,
                 "Got {reason:?} connect failure, logging out: {}",
                 DisplayableNodeRef(node)
             );
