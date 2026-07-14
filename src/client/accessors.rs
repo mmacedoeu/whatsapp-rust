@@ -229,6 +229,27 @@ impl Client {
         self.persistence_manager.clone()
     }
 
+    /// Phase 7.J.5: read-only access to the LIVE in-memory `Device`
+    /// that wacore is currently using for protocol operations
+    /// (noise handshake + encrypted-channel requests). Distinct
+    /// from `persistence_manager().get_device_snapshot()` which
+    /// returns a cached `Arc<Device>` view that may lag the live
+    /// device between `modify_device` commits.
+    ///
+    /// Diagnostic use only: downstream operators use this to capture
+    /// the noise identity at LoggedOut-time WITHOUT the race against
+    /// the persistence cache. Observed in our integration: the
+    /// cached snapshot returned a different `noise_key` than the
+    /// bytes actually used for the failed connect (and different
+    /// from what was on disk after the LoggedOut fired).
+    ///
+    /// `Device` itself holds `noise_key: KeyPair` etc. with the
+    /// material wacore hands to the noise handshake, so this is
+    /// the ground-truth view of "what the server saw".
+    pub fn core_device(&self) -> &wacore::store::Device {
+        &self.core.device
+    }
+
     // The owned returns below are the only clones left: the snapshot read
     // itself is an Arc refcount bump (no lock against writers). Callers that
     // only need a borrow can hold `persistence_manager().get_device_snapshot()`
