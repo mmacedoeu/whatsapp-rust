@@ -1438,7 +1438,10 @@ impl Client {
         // Patch: trace-level capture of the raw failure stanza BEFORE we
         // dispatch the lifecycle event. Pairs with the WARN line in the
         // LoggedOut arm so request/response correlation is possible when
-        // RUST_LOG=wacore=trace (or higher) is set.
+        // RUST_LOG=wacore=trace (or higher) is set. Gated on the
+        // `tracing` feature because the `tracing` crate is optional in
+        // this workspace crate (unlike wacore, where it's a hard dep).
+        #[cfg(feature = "tracing")]
         tracing::trace!(
             failure_node = %DisplayableNodeRef(node),
             "wa: connect_failure received from server"
@@ -1458,21 +1461,32 @@ impl Client {
             // noise static public key so we can correlate this LoggedOut across
             // broken-* snapshots and re-pairs. SHA-256 (not blake3 — wacore has
             // no blake3 dep) truncated to 16 hex chars; safe to log because it
-            // is a fingerprint, not the key itself.
-            let server_message = attrs
-                .optional_string("message")
-                .map(|m| m.into_owned())
-                .unwrap_or_default();
-            let noise_fp = {
-                use sha2::{Digest, Sha256};
-                let pk_bytes = self.core.device.noise_key.public_key.public_key_bytes();
-                let digest = Sha256::digest(pk_bytes);
-                hex::encode(&digest[..8]) // 16 hex chars
-            };
+            // is a fingerprint, not the key itself. Gated on `tracing` feature:
+            // the structured-field syntax requires the `tracing` crate, and
+            // `sha2` is only pulled in when this feature is on (added as a
+            // direct dep to support this patch).
+            #[cfg(feature = "tracing")]
+            {
+                let server_message = attrs
+                    .optional_string("message")
+                    .map(|m| m.into_owned())
+                    .unwrap_or_default();
+                let noise_fp = {
+                    use sha2::{Digest, Sha256};
+                    let pk_bytes = self.core.device.noise_key.public_key.public_key_bytes();
+                    let digest = Sha256::digest(pk_bytes);
+                    hex::encode(&digest[..8]) // 16 hex chars
+                };
+                tracing::warn!(
+                    noise_identity_fp = %noise_fp,
+                    server_message = %server_message,
+                    reason_code = reason_code,
+                    "Got {reason:?} connect failure, logging out: {}",
+                    DisplayableNodeRef(node)
+                );
+            }
+            #[cfg(not(feature = "tracing"))]
             warn!(
-                noise_identity_fp = %noise_fp,
-                server_message = %server_message,
-                reason_code = reason_code,
                 "Got {reason:?} connect failure, logging out: {}",
                 DisplayableNodeRef(node)
             );
