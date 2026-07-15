@@ -104,16 +104,60 @@ impl HandshakeUtils {
 
     /// Creates an IK ClientHello carrying the encrypted client static and
     /// the encrypted 0-RTT payload alongside the ephemeral.
+    ///
+    /// Phase 7.J S6.7: the four trailing arguments (`extended_ciphertext`,
+    /// `extended_ephemeral_pub`, `pq_mode`, `use_extended`) populate the
+    /// modern WA `HandshakeMessage.ClientHello` fields that Chrome 150
+    /// emits but wacore 551e574 predates. Per S5 gap analysis, Chrome
+    /// emits a 363B IK ClientHello with the 4 extra fields populated,
+    /// while wacore emits ~250B without them — a 113B gap. Without
+    /// these fields the WA server rejects with 401 LoggedOut at the
+    /// post-handshake IQ layer.
+    ///
+    /// Field VALUES are placeholders. Real derivation (ECDH over an
+    /// extended_ephemeral_priv x server_static_pub) is a follow-up; this
+    /// commit only proves the structure is correct. Iterate per S6.5 if
+    /// the server rejects.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_ik_client_hello(
         ephemeral_key: &[u8],
         encrypted_static: Vec<u8>,
         encrypted_payload: Vec<u8>,
+        extended_ciphertext: Option<Vec<u8>>,
+        extended_ephemeral_pub: Option<&[u8]>,
+        pq_mode: Option<wa::handshake_message::HandshakePqMode>,
+        use_extended: bool,
     ) -> HandshakeMessage {
+        use rand::Rng;
+        let mut rng = rand::rng();
+
+        // Placeholder for extendedCiphertext: 80B random until the server's
+        // expected content (typically ECDH-derived ciphertext) is measured.
+        let ext_ct = extended_ciphertext.unwrap_or_else(|| {
+            let mut buf = vec![0u8; 80];
+            rng.fill_bytes(&mut buf);
+            buf
+        });
+        // Placeholder for extendedEphemeral: 32B random until the server's
+        // expected derivation is measured.
+        let ext_eph = extended_ephemeral_pub
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|| {
+                let mut buf = vec![0u8; 32];
+                rng.fill_bytes(&mut buf);
+                buf
+            });
+        let pq_mode_val = pq_mode.unwrap_or(wa::handshake_message::HandshakePqMode::WA_PQ);
+
         HandshakeMessage {
             client_hello: buffa::MessageField::some(wa::handshake_message::ClientHello {
                 ephemeral: Some(ephemeral_key.to_vec()),
                 r#static: Some(encrypted_static),
                 payload: Some(encrypted_payload),
+                use_extended: Some(use_extended),
+                extended_ciphertext: Some(ext_ct),
+                extended_ephemeral: Some(ext_eph),
+                pq_mode: Some(pq_mode_val),
                 ..Default::default()
             }),
             ..Default::default()
@@ -580,10 +624,18 @@ impl IkHandshakeState {
         // 0-RTT payload (encrypted)
         let encrypted_payload = self.noise.encrypt(&self.payload)?;
 
+        // Phase 7.J S6.7: emit modern WA extended fields. Placeholder random
+        // values for extendedCiphertext + extendedEphemeral; WA_PQ for
+        // pqMode; useExtended=true. If the server rejects, iterate per
+        // S6.5 (try XXKEM_2 / IKKEM variants, real ECDH derivations, etc.).
         let msg = HandshakeUtils::build_ik_client_hello(
             &ephemeral_pub_bytes,
             encrypted_static,
             encrypted_payload,
+            None, // extended_ciphertext: ECDH-derived once measured
+            None, // extended_ephemeral_pub: ECDH-derived once measured
+            Some(wa::handshake_message::HandshakePqMode::WA_PQ),
+            true,
         );
         Ok(msg.encode_to_vec())
     }
