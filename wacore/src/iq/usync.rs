@@ -229,16 +229,28 @@ fn parse_verified_name_from_business(business_node: &NodeRef<'_>) -> Option<Veri
 
 fn parse_business_fields(
     user_node: &NodeRef<'_>,
-) -> (bool, Option<VerifiedName>, Option<UsyncSubprotocolError>) {
+) -> (
+    bool,
+    Option<VerifiedName>,
+    Option<UsyncSubprotocolError>,
+    Option<Jid>,
+) {
     match user_node.get_optional_child("business") {
         Some(business_node) => {
             if let Some(error) = parse_subprotocol_error(business_node) {
-                (false, None, Some(error))
+                (false, None, Some(error), None)
             } else {
-                (true, parse_verified_name_from_business(business_node), None)
+                // The LID query direction places `pn_jid` on `<business>` (not on
+                // `<user>`). Capture it here so `IsOnWhatsAppSpec::parse_response`
+                // can fall back to it when the `<user>` attribute is absent.
+                let pn_jid = business_node
+                    .attrs()
+                    .optional_string("pn_jid")
+                    .and_then(|s| s.parse::<Jid>().ok());
+                (true, parse_verified_name_from_business(business_node), None, pn_jid)
             }
         }
-        None => (false, None, None),
+        None => (false, None, None, None),
     }
 }
 
@@ -267,7 +279,8 @@ fn parse_user_common_fields(user_node: &NodeRef<'_>) -> Option<ParsedUserFields>
         None => (None, None),
     };
 
-    let (is_business, verified_name, business_error) = parse_business_fields(user_node);
+    let (is_business, verified_name, business_error, _business_pn_jid) =
+        parse_business_fields(user_node);
 
     Some(ParsedUserFields {
         jid,
@@ -470,14 +483,21 @@ impl IqSpec for IsOnWhatsAppSpec {
                 continue;
             };
 
-            let pn_jid = user_node
+            let pn_jid_attr = user_node
                 .attrs()
                 .optional_string("pn_jid")
                 .and_then(|s| s.parse::<Jid>().ok());
 
             let (lid, lid_error) = parse_lid_fields(user_node);
             let (is_registered, contact_error) = parse_contact_fields(user_node, &jid);
-            let (is_business, verified_name, business_error) = parse_business_fields(user_node);
+            let (is_business, verified_name, business_error, business_pn_jid) =
+                parse_business_fields(user_node);
+
+            // The LID query direction (IsOnWhatsAppQueryType::Lid) returns
+            // `pn_jid` on the `<business>` child rather than as a `<user>`
+            // attribute. Prefer the explicit attribute when present, otherwise
+            // fall back to the business-level value.
+            let pn_jid = pn_jid_attr.or(business_pn_jid);
 
             results.push(IsOnWhatsAppResult {
                 jid,
